@@ -1,0 +1,16 @@
+{
+  "name": "ifs24007-pabwe2026-gulasadar-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.js",
+    "start": "bun src/server.js",
+    "test": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov",
+    "test:watch": "bun test --watch"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.0"
+  }
+}

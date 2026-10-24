@@ -1,0 +1,13 @@
+services:
+  backend:
+    build: .
+    ports: ["4000:4000"]
+    environment:
+      # Ganti dengan URL frontend saat online, contoh: https://gulasadar.contoh.com
+      - CORS_ORIGIN=${CORS_ORIGIN:-*}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes: ["gula-data:/data"]
+    restart: unless-stopped
+volumes:
+  gula-data:
