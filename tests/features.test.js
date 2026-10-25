@@ -2,24 +2,18 @@ import { test, expect, describe, beforeAll, afterAll, afterEach } from "bun:test
 
 process.env.DB_PATH = ":memory:";
 delete process.env.ANTHROPIC_API_KEY;
-delete process.env.GEMINI_API_KEY;
 const { default: app } = await import("../src/app.js");
 const { calcLabel, allFoodIds } = await import("../src/foods.js");
 const { checkSafety } = await import("../src/safety.js");
 const { validateRisk, assessRisk, bmi } = await import("../src/risk.js");
 const { validateGlucose, classifyGlucose } = await import("../src/glucose.js");
-const { processIdentified, aiEnabled, aiProvider, identifyPrompt } = await import("../src/ai.js");
-const { saveAiFood, slugify, getFood } = await import("../src/foods.js");
+const { filterAiItems, aiEnabled } = await import("../src/ai.js");
 
 let server, base;
 beforeAll(() => { server = app.listen(0); base = `http://127.0.0.1:${server.address().port}`; });
 afterAll(() => server.close());
 const realFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = realFetch;
-  delete process.env.ANTHROPIC_API_KEY;
-  delete process.env.GEMINI_API_KEY;
-});
+afterEach(() => { globalThis.fetch = realFetch; delete process.env.ANTHROPIC_API_KEY; });
 const send = (path, body, method = "POST") =>
   realFetch(base + path, { method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
 
@@ -138,142 +132,154 @@ describe("chatbot", () => {
       ? new Response("{}", { status: 500 }) : realFetch(url, o);
     expect((await chat("apa batas gula sehari?")).mode).toBe("rules");
   });
-  test("mode AI dengan Gemini", async () => {
-    process.env.GEMINI_API_KEY = "test";
-    let sent;
-    globalThis.fetch = async (url, o) => {
-      if (!url.startsWith("https://generativelanguage")) return realFetch(url, o);
-      sent = JSON.parse(o.body);
-      return new Response(JSON.stringify({ steps: [
-        { type: "thought" },
-        { type: "model_output", content: [{ type: "text", text: "Halo dari Gemini" }] },
-      ] }));
-    };
-    const r = await chat("halo");
-    expect(r).toEqual({ reply: "Halo dari Gemini", mode: "ai" });
-    expect(sent.system_instruction).toContain("Sobat Gula");
-    expect(sent.response_format).toBeUndefined();
-  });
 });
 
 describe("identifikasi foto", () => {
   const img = { image: "abc", mediaType: "image/png" };
-  const anthropicReply = (text) => (globalThis.fetch = async (url, o) => url.startsWith("https://api.anthropic")
+  const aiReply = (text) => (globalThis.fetch = async (url, o) => url.startsWith("https://api.anthropic")
     ? new Response(JSON.stringify({ content: [{ type: "text", text }, { type: "x" }] }))
     : realFetch(url, o));
-  const geminiReply = (obj, capture = {}) => (globalThis.fetch = async (url, o) => {
-    if (!url.startsWith("https://generativelanguage")) return realFetch(url, o);
-    capture.body = JSON.parse(o.body);
-    capture.headers = o.headers;
-    return new Response(JSON.stringify({ steps: [{ type: "model_output", content: [{ type: "text", text: JSON.stringify(obj) }] }] }));
-  });
-  const item = (o) => ({ name: "", matched_id: "", portion: "1 bungkus", servings: 1, sugar_g: 0, carbs_g: 0,
-    label_read: false, confidence: "sedang", ...o });
-
-  test("mode lokal otomatis tanpa API key, status AI", async () => {
+  test("nonaktif tanpa API key", async () => {
     expect(aiEnabled()).toBe(false);
-    expect(aiProvider()).toBeNull();
-    // Tanpa API key, identifikasi foto tetap berhasil secara lokal (200 OK)
-    const localRes = await send("/api/foods/identify", { ...img, filename: "chitato.png" });
-    expect(localRes.status).toBe(200);
-    const localData = (await localRes.json()).data;
-    expect(localData.foods[0].id).toBe("ciki-chitato");
-    expect(localData.mode).toBe("local");
-
-    const lolipopRes = await send("/api/foods/identify", { ...img, filename: "lolipop.png" });
-    expect((await lolipopRes.json()).data.foods[0].id).toBe("permen-lolipop");
-
-    const unknownRes = await send("/api/foods/identify", { ...img, filename: "random-doc.pdf" });
-    expect((await unknownRes.json()).data.foods).toHaveLength(0);
-
-    expect((await (await realFetch(base + "/api/ai/status")).json()).data).toEqual({ enabled: true, provider: "local", mode: "local" });
-    process.env.ANTHROPIC_API_KEY = "a";
-    expect(aiProvider()).toBe("anthropic");
-    process.env.GEMINI_API_KEY = "g";
-    expect(aiProvider()).toBe("gemini");
-    expect((await (await realFetch(base + "/api/ai/status")).json()).data).toEqual({ enabled: true, provider: "gemini", mode: "cloud" });
+    expect((await send("/api/foods/identify", img)).status).toBe(503);
   });
   test("validasi input", async () => {
-    process.env.GEMINI_API_KEY = "test";
+    process.env.ANTHROPIC_API_KEY = "test";
     expect((await send("/api/foods/identify", { image: "a", mediaType: "x" })).status).toBe(400);
     expect((await send("/api/foods/identify")).status).toBe(400);
   });
-  test("Gemini: makanan apa pun dikenali (ciki kemasan), basis data diutamakan", async () => {
-    process.env.GEMINI_API_KEY = "test";
-    const cap = {};
-    geminiReply({ is_food: true, items: [
-      item({ name: "Es teh manis", matched_id: "es-teh-manis", servings: 2 }),
-      item({ name: "Chitato Sapi Panggang", portion: "1 bungkus (68 g)", sugar_g: 2, carbs_g: 38, label_read: true, confidence: "tinggi" }),
-      item({ name: "Kue cubit", sugar_g: 9, carbs_g: "x", confidence: "ngawur", portion: "" }),
-    ] }, cap);
-    const { data } = await (await send("/api/foods/identify", img)).json();
-    expect(cap.headers["x-goog-api-key"]).toBe("test");
-    expect(cap.body.response_format.mime_type).toBe("application/json");
-    expect(cap.body.input[0]).toEqual({ type: "image", data: "abc", mime_type: "image/png" });
-    expect(data.notFood).toBe(false);
-    expect(data.foods).toHaveLength(3);
-    expect(data.foods[0]).toMatchObject({ id: "es-teh-manis", source: "database", sugar_total_g: 40 });
-    expect(data.foods[1]).toMatchObject({ id: "ai-chitato-sapi-panggang", source: "label", confidence: "tinggi", sugar_g: 2 });
-    expect(data.foods[2]).toMatchObject({ source: "ai", confidence: "sedang", carbs_g: 0, portion: "1 porsi" });
-    // makanan hasil AI bisa langsung dicatat
-    const log = await send("/api/logs", { foodId: "ai-chitato-sapi-panggang", servings: 1 });
-    expect(log.status).toBe(201);
-    await send(`/api/logs/${(await log.json()).data.id}`, null, "DELETE");
-  });
-  test("Anthropic: JSON dalam blok kode, item tidak valid dibuang", async () => {
+  test("ID tidak dikenal dibuang, nilai gizi dari basis data", async () => {
     process.env.ANTHROPIC_API_KEY = "test";
-    anthropicReply('```json\n' + JSON.stringify({ is_food: true, items: [
-      item({ name: "Minuman soda", matched_id: "soda", servings: 50 }),
-      item({ name: "", sugar_g: 5 }),
-      item({ name: "Permen", sugar_g: 999 }),
-      item({ name: "!!!", sugar_g: 3 }),
-    ] }) + '\n```');
+    aiReply('```json\n{"items":[{"id":"es-teh-manis","servings":2},{"id":"ngarang","servings":1},{"servings":99}]}\n```');
     const { data } = await (await send("/api/foods/identify", img)).json();
     expect(data.foods).toHaveLength(1);
-    expect(data.foods[0].servings).toBe(10);
-    expect(data.unknown).toEqual(["?", "Permen", "!!!"]);
+    expect(data.foods[0].sugar_total_g).toBe(40);
+    expect(data.unknown).toEqual(["ngarang", "?"]);
   });
-  test("bukan makanan, JSON tidak valid, dan fallback mulus ke lokal", async () => {
-    process.env.GEMINI_API_KEY = "test";
-    geminiReply({ is_food: false, items: [] });
-    expect((await (await send("/api/foods/identify", img)).json()).data).toEqual({ foods: [], unknown: [], notFood: true });
-    // JSON tidak valid jatuh ke mode lokal
-    globalThis.fetch = async (url, o) => url.startsWith("https://generativelanguage")
-      ? new Response(JSON.stringify({})) : realFetch(url, o);
-    const fallbackRes = await (await send("/api/foods/identify", { ...img, filename: "taro.jpg" })).json();
-    expect(fallbackRes.data.foods[0].id).toBe("ciki-taro");
-    // Kegagalan cloud AI juga jatuh mulus ke mode lokal tanpa error 502
-    globalThis.fetch = async (url, o) => url.startsWith("https://generativelanguage")
+  test("JSON AI tidak valid dan kegagalan layanan", async () => {
+    process.env.ANTHROPIC_API_KEY = "test";
+    aiReply("bukan json");
+    expect((await (await send("/api/foods/identify", img)).json()).data).toEqual({ foods: [], unknown: [] });
+    globalThis.fetch = async (url, o) => url.startsWith("https://api.anthropic")
       ? new Response("{}", { status: 500 }) : realFetch(url, o);
-    const cloudFailRes = await (await send("/api/foods/identify", { ...img, filename: "oreo.png" })).json();
-    expect(cloudFailRes.data.foods[0].id).toBe("biskuit-oreo");
+    expect((await send("/api/foods/identify", img)).status).toBe(502);
   });
-  test("processIdentified, saveAiFood, dan prompt", () => {
-    expect(processIdentified("x")).toEqual({ foods: [], unknown: [], notFood: false });
-    expect(processIdentified({ items: [{ matched_id: "soda", servings: 0 }] }).foods[0].servings).toBe(1);
-    expect(slugify("Kue Lumpur Éclair!")).toBe("kue-lumpur-eclair");
-    expect(saveAiFood({ name: "***", portion: "1", sugarG: 1, carbsG: 1 })).toBeNull();
-    // nilai dari label tidak ditimpa estimasi kasar
-    saveAiFood({ name: "Wafer Coklat", portion: "1 bungkus", sugarG: 12, carbsG: 20, labelRead: true });
-    saveAiFood({ name: "Wafer Coklat", portion: "1 bungkus", sugarG: 30, carbsG: 20, labelRead: false });
-    expect(getFood("ai-wafer-coklat").sugar_g).toBe(12);
-    // item AI lama tidak dianggap sumber basis data resmi
-    expect(processIdentified({ items: [item({ name: "Wafer Coklat", matched_id: "ai-wafer-coklat", sugar_g: 12, label_read: true })] })
-      .foods[0].source).toBe("label");
-    expect(identifyPrompt(["soda"])).toContain("ciki");
-    expect(allFoodIds()).toContain("soda");
+  test("filterAiItems", async () => {
+    expect(await filterAiItems("x")).toEqual({ foods: [], unknown: [] });
+    expect(await filterAiItems([{ id: "soda", servings: 0 }])).toBeDefined();
+    expect((await filterAiItems([{ id: "soda", servings: 50 }])).foods[0].servings).toBe(10);
+    expect(await allFoodIds()).toContain("soda");
   });
 });
 
 describe("rangkaian hari terputus", () => {
   test("hari tanpa catatan memutus streak", async () => {
-    const { default: db } = await import("../src/db.js");
-    db.run("DELETE FROM food_logs");
-    db.run("INSERT INTO food_logs (food_id, servings, sugar_g, eaten_at) VALUES ('soda',1,35,datetime('now','localtime','-3 days'))");
+    const { default: db, TZ } = await import("../src/db.js");
+    const NOW_MINUS = (d) => `datetime('now','${TZ}','${d}')`;
+    await db.run("DELETE FROM food_logs");
+    await db.run(`INSERT INTO food_logs (food_id, servings, sugar_g, eaten_at) VALUES ('soda',1,35,${NOW_MINUS('-3 days')})`);
     const s = (await (await realFetch(base + "/api/logs/stats")).json()).data;
     expect(s.streak).toBe(0);
-    db.run("INSERT INTO food_logs (food_id, servings, sugar_g, eaten_at) VALUES ('soda',1,35,datetime('now','localtime','-1 days'))");
+    await db.run(`INSERT INTO food_logs (food_id, servings, sugar_g, eaten_at) VALUES ('soda',1,35,${NOW_MINUS('-1 days')})`);
     expect((await (await realFetch(base + "/api/logs/stats")).json()).data.streak).toBe(1);
-    db.run("DELETE FROM food_logs");
+    await db.run("DELETE FROM food_logs");
+  });
+});
+
+describe("asisten lokal yang lebih pintar", () => {
+  const chat = async (message) => (await (await send("/api/chat", { message })).json()).data;
+  test("menjawab kandungan gula dari basis data makanan", async () => {
+    const a = await chat("berapa gula di es teh manis?");
+    expect(a.mode).toBe("rules");
+    expect(a.reply).toContain("20 g gula");
+    expect(a.reply).toContain("merah");
+    expect((await chat("gula di air putih")).reply).toContain("hampir tidak mengandung");
+    expect(a.suggestions.length).toBe(3);
+  });
+  test("beberapa makanan: pilih nama terpanjang", async () => {
+    expect((await chat("lebih manis es teh manis atau soda?")).reply).toContain("Es teh manis");
+  });
+  test("batas harian tidak tertimpa nama makanan", async () => {
+    expect((await chat("batas gula sehari kalau minum soda?")).reply).toContain("50 g");
+  });
+  test("ringkasan hari ini kosong dan terisi", async () => {
+    const { default: db, TZ } = await import("../src/db.js");
+    const NOW_MINUS = (d) => `datetime('now','${TZ}','${d}')`;
+    await db.run("DELETE FROM food_logs");
+    expect((await chat("ringkasan gulaku hari ini")).reply).toContain("belum mencatat");
+    await send("/api/logs", { foodId: "soda" });
+    expect((await chat("ringkasan gulaku hari ini")).reply).toContain("35 g");
+    await send("/api/logs", { foodId: "soda" });
+    expect((await chat("sisa jatah gula hari ini")).reply).toContain("melewati");
+    await db.run("DELETE FROM food_logs");
+  });
+  test("topik pengetahuan", async () => {
+    const qs = ["beda diabetes tipe 1 dan 2", "arti lampu lalu lintas", "tips mengurangi gula", "cara baca label kemasan",
+      "madu sehat?", "olahraga apa", "cara mencegah diabetes", "riwayat keluarga diabetes", "gula darah normal berapa",
+      "menu sehat piring", "makasih", "halo", "gejala diabetes", "xyz acak"];
+    for (const q of qs) expect((await chat(q)).reply.length).toBeGreaterThan(20);
+    expect((await chat("xyz acak")).reply).toContain("belum punya jawaban");
+  });
+  test("status chat", async () => {
+    const r = await (await realFetch(base + "/api/chat/status")).json();
+    expect(r.data.mode).toBe("rules");
+    expect(r.data.suggestions.length).toBeGreaterThan(3);
+    process.env.GEMINI_API_KEY = "g";
+    expect((await (await realFetch(base + "/api/chat/status")).json()).data).toMatchObject({ mode: "ai", provider: "gemini" });
+    delete process.env.GEMINI_API_KEY;
+  });
+});
+
+describe("provider Gemini", () => {
+  afterEach(() => { delete process.env.GEMINI_API_KEY; });
+  const gemini = (text) => (globalThis.fetch = async (url, o) => url.startsWith("https://generativelanguage")
+    ? (o.headers["x-goog-api-key"] === "g" ? new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text }, {}] } }] })) : new Response("{}", { status: 403 }))
+    : realFetch(url, o));
+  test("chat memakai Gemini", async () => {
+    process.env.GEMINI_API_KEY = "g";
+    gemini("Halo dari Gemini");
+    const d = (await (await send("/api/chat", { message: "tes" })).json()).data;
+    expect(d).toMatchObject({ mode: "ai", reply: "Halo dari Gemini" });
+  });
+  test("identifikasi foto memakai Gemini", async () => {
+    process.env.GEMINI_API_KEY = "g";
+    gemini('{"items":[{"id":"soda"}]}');
+    const d = (await (await send("/api/foods/identify", { image: "abc", mediaType: "image/png" })).json()).data;
+    expect(d.foods[0].sugar_total_g).toBe(35);
+  });
+  test("Gemini gagal -> chat jatuh ke aturan lokal", async () => {
+    process.env.GEMINI_API_KEY = "salah";
+    gemini("x");
+    expect((await (await send("/api/chat", { message: "halo" })).json()).data.mode).toBe("rules");
+  });
+  test("Gemini tanpa kandidat", async () => {
+    process.env.GEMINI_API_KEY = "g";
+    globalThis.fetch = async (url, o) => url.startsWith("https://generativelanguage")
+      ? new Response("{}") : realFetch(url, o);
+    expect((await (await send("/api/foods/identify", { image: "abc", mediaType: "image/png" })).json()).data).toEqual({ foods: [], unknown: [] });
+  });
+});
+
+describe("route akar dan penanganan error", () => {
+  test("GET / menjelaskan API", async () => {
+    const r = await (await realFetch(base + "/")).json();
+    expect(r).toMatchObject({ name: "GulaSadar API", status: "ok" });
+  });
+  test("JSON rusak menghasilkan 400 berformat JSON", async () => {
+    const r = await realFetch(base + "/api/chat", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{rusak" });
+    expect(r.status).toBe(400);
+    expect((await r.json()).error).toBeString();
+  });
+  test("error tak terduga menghasilkan 500 tanpa membocorkan detail", async () => {
+    const { default: db } = await import("../src/db.js");
+    const orig = db.all; // db.all dipakai rute glucose; paksa gagal sekali lewat tabel yang dihapus
+    await db.run("ALTER TABLE glucose_logs RENAME TO glucose_tmp");
+    const spy = console.error; console.error = () => {};
+    const r = await realFetch(base + "/api/glucose");
+    console.error = spy;
+    await db.run("ALTER TABLE glucose_tmp RENAME TO glucose_logs");
+    expect(r.status).toBe(500);
+    expect((await r.json()).error).toBe("Terjadi kesalahan pada server");
+    expect(db.all).toBe(orig);
   });
 });

@@ -1,94 +1,106 @@
+import { get, TODAY } from "./db.js";
 import { checkSafety, EMERGENCY_REPLY, DOSAGE_REPLY } from "./safety.js";
-import { aiEnabled, askAI } from "./ai.js";
-import { searchFoods } from "./foods.js";
+import { aiEnabled, askAI, aiProvider } from "./ai.js";
+import { searchFoods, DAILY_LIMIT_G } from "./foods.js";
 
-const RULES = [
-  // 1. Sapaan Ramah
-  [
-    /^(halo|hai|hi|hey|hei|assalamu|selamat pagi|selamat siang|selamat sore|selamat malam|pagi|siang|sore|malam)/,
-    "Halo! Aku Sobat Gula, asisten edukasi kesehatanmu. Tanyakan apa saja seputar batas gula harian, takaran gula makanan/minuman, tips pencegahan diabetes, atau arti hasil tes gula darahmu. Ada yang ingin kamu ketahui hari ini?",
-  ],
-  // 2. Batas Gula Harian (Permenkes 30/2013)
-  [
-    /gula.*(batas|sehari|maksimal|jatah|rekomendasi)|batas.*gula|berapa.*gula.*sehari/,
-    "Anjuran resmi Kementerian Kesehatan RI (Permenkes No. 30/2013): Batas konsumsi gula tambahan maksimal adalah 50 gram (setara 4 sendok makan) per orang per hari untuk menjaga kadar glukosa tetap stabil dan mencegah risiko diabetes.",
-  ],
-  // 3. Gejala & Tanda Diabetes
-  [
-    /(gejala|tanda|ciri).*diabetes|diabetes.*(gejala|tanda|ciri)/,
-    "Gejala klasik diabetes (Trias 3P): 1. Poliuria (sering buang air kecil, terutama malam hari), 2. Polidipsia (sering merasa sangat haus), 3. Polifagia (mudah lapar namun berat badan justru turun). Gejala lainnya: luka sulit sembuh, kesemutan di kaki, dan mudah lelah. Segera periksakan diri ke puskesmas/dokter untuk tes laboratorium jika mengalami gejala ini.",
-  ],
-  // 4. Minuman Manis & Bahayanya
-  [
-    /(minuman|teh|soda|kopi|boba|jus).*(manis|gula|bahaya)|manis.*bahaya|efek.*manis/,
-    "Minuman manis (seperti boba, kopi susu gula aren, es teh manis, soda) merupakan penyumbang gula cair terbesar. Gula cair diserap sangat cepat oleh tubuh sehingga memicu lonjakan insulin mendadak. Disarankan memilih opsi 'less sugar' (sedikit gula), beralih ke air putih, atau memilih ukuran gelas yang lebih kecil.",
-  ],
-  // 5. Pemanis Alternatif / Nol Kalori
-  [
-    /pemanis|stevia|sukralosa|eritritol|pemanis buatan|pengganti gula/,
-    "Pemanis rendah/nol kalori yang aman menurut BPOM antara lain Stevia (alami dari daun), Sukralosa, dan Eritritol. Pemanis ini tidak menaikkan kadar gula darah secara signifikan, namun biasakan melatih lidah agar tidak terus bergantung pada rasa manis berlebih.",
-  ],
-  // 6. Olahraga & Aktivitas Fisik
-  [
-    /olahraga|aktivitas|bergerak|jalan kaki|senam/,
-    "Kemenkes dan PERKENI menganjurkan aktivitas fisik intensitas sedang minimal 150 menit per minggu (misalnya jalan cepat atau senam 30 menit per hari, 5 kali seminggu). Olahraga teratur membantu sel otot menyerap glukosa darah tanpa membebani pankreas.",
-  ],
-  // 7. Cara Pencegahan Diabetes
-  [
-    /cegah|mencegah|hindari|tips.*sehat|cara.*cegah/,
-    "Langkah utama pencegahan diabetes tipe 2: 1. Batasi gula tambahan maksimal 50 g/hari, 2. Terapkan pola 'Isi Piringku' (perbanyak sayur dan serat), 3. Rutin berolahraga 150 menit/minggu, 4. Jaga berat badan ideal, 5. Hindari merokok dan lakukan cek gula darah secara berkala.",
-  ],
-  // 8. Tes & Nilai Normal Gula Darah (PERKENI)
-  [
-    /(kadar|nilai|angka|cek|tes).*gula darah|gula darah.*normal/,
-    "Pedoman PERKENI untuk kadar glukosa darah: 1. Gula darah puasa (puasa ≥8 jam): Normal <100 mg/dL, Prediabetes 100–125 mg/dL, Diabetes ≥126 mg/dL. 2. Gula darah 2 jam setelah makan / sewaktu: Normal <140 mg/dL, Prediabetes 140–199 mg/dL, Diabetes ≥200 mg/dL.",
-  ],
-  // 9. Buah & Pola Makan Sehat
-  [
-    /buah|makanan sehat|camilan sehat|sayur/,
-    "Buah segar utuh (seperti apel, pir, jeruk, alpukat) sangat baik karena mengandung serat pangan yang memperlambat penyerapan gula. Hindari jus buah kemasan atau buah kaleng yang biasanya ditambahkan sirup gula pekat.",
-  ],
+export const SUGGESTIONS = [
+  "Berapa batas gula sehari?",
+  "Berapa gula di es teh manis?",
+  "Ringkasan gulaku hari ini",
+  "Apa gejala diabetes?",
+  "Tips mengurangi minuman manis",
+  "Apa itu lampu lalu lintas?",
+];
+
+// Basis pengetahuan edukasi: [pola, jawaban]. Urutan = prioritas.
+const KB = [
+  [/(gejala|tanda|ciri).*(diabetes|gula darah)|diabetes.*(gejala|tanda|ciri)/,
+    "Gejala umum diabetes: sering haus, sering buang air kecil (terutama malam), mudah lelah, lapar berlebihan, penglihatan kabur, dan luka sulit sembuh. Gejala bisa tidak muncul di awal, jadi pemeriksaan gula darah berkala penting. Untuk kepastian, periksakan ke dokter."],
+  [/(tipe 1|tipe 2|beda.*diabetes|jenis diabetes)/,
+    "Diabetes tipe 1 terjadi ketika tubuh hampir tidak memproduksi insulin (sering muncul sejak muda). Diabetes tipe 2 lebih umum: tubuh kurang peka terhadap insulin, dan sangat dipengaruhi berat badan, pola makan, serta aktivitas. Tipe 2 sering bisa dicegah atau ditunda lewat gaya hidup sehat."],
+  [/(lampu lalu lintas|hijau|kuning|merah|indikator|warna)/,
+    "Indikator di GulaSadar: HIJAU = gula rendah (sampai 5 g per porsi), KUNING = sedang (6-15 g), MERAH = tinggi (di atas 15 g). Ini bantuan edukasi untuk memilih dengan lebih sadar, bukan penilaian medis."],
+  [/(batas|maksimal|jatah|anjuran|sehari).*(gula)|gula.*(batas|maksimal|sehari|jatah)/,
+    "Anjuran Kemenkes: konsumsi gula tambahan maksimal 50 g per hari, sekitar 4 sendok makan. Itu sudah termasuk gula di minuman manis dan makanan kemasan, bukan hanya gula yang kamu tambahkan sendiri."],
+  [/(kurangi|mengurangi|turunkan|tips|cara).*(manis|gula)|(manis|gula).*(kurangi|mengurangi|tips)/,
+    "Tips praktis: 1) minta less sugar atau tanpa gula saat membeli minuman, 2) ganti minuman manis dengan air putih atau teh tawar, 3) pilih buah utuh daripada jus kemasan, 4) baca label dan cek 'gula' per sajian, 5) kurangi bertahap supaya lidah terbiasa, misalnya turunkan satu sendok tiap minggu."],
+  [/(label|kemasan|informasi nilai gizi|sajian)/,
+    "Di label kemasan, lihat baris 'Gula' per sajian lalu kalikan dengan jumlah sajian yang kamu habiskan. Banyak kemasan berisi lebih dari satu sajian. Gunakan menu Label di GulaSadar untuk menghitungnya otomatis."],
+  [/(pemanis|stevia|aspartam|sukralosa|gula merah|gula aren|madu)/,
+    "Gula merah, gula aren, dan madu tetap dihitung sebagai gula tambahan walau terasa lebih alami. Pemanis buatan tidak menambah gula, tetapi sebaiknya tidak berlebihan; bicarakan dengan tenaga kesehatan bila kamu punya kondisi tertentu."],
+  [/(olahraga|aktivitas|bergerak|jalan kaki|latihan)/,
+    "Usahakan aktivitas fisik intensitas sedang sekitar 150 menit per minggu, misalnya jalan cepat 30 menit, 5 hari seminggu. Bergerak membantu tubuh memakai gula darah lebih baik. Mulai dari yang ringan dan tingkatkan perlahan."],
+  [/(cegah|mencegah|pencegahan|hindari|terhindar)/,
+    "Langkah pencegahan diabetes tipe 2: jaga berat badan ideal, batasi gula tambahan dan minuman manis, perbanyak sayur dan serat, aktif bergerak, cukup tidur, tidak merokok, serta periksa gula darah berkala bila berisiko. Ini mengurangi risiko tetapi tidak menjamin."],
+  [/(riwayat keluarga|keturunan|genetik|turunan)/,
+    "Riwayat keluarga diabetes memang menambah risiko, tetapi bukan takdir. Gaya hidup sehat bisa menurunkan risiko secara berarti. Coba menu Risiko di GulaSadar untuk skrining edukatif, dan konsultasikan ke dokter untuk pemeriksaan."],
+  [/(gula darah|glukosa).*(normal|rentang|angka|berapa)|normal.*gula darah/,
+    "Sebagai gambaran edukatif (mg/dL): puasa normal di bawah 100, 100-125 perlu waspada, 126 ke atas tinggi. Dua jam sesudah makan normal di bawah 140. Diagnosis hanya bisa ditegakkan dokter lewat pemeriksaan laboratorium."],
+  [/(sayur|serat|buah|makan sehat|menu sehat|piring)/,
+    "Prinsip piring sehat: setengah piring sayur dan buah, seperempat protein (ikan, tempe, telur), seperempat karbohidrat (nasi, umbi) dengan porsi wajar. Pilih karbohidrat tinggi serat bila bisa."],
+  [/(terima kasih|makasih|thanks)/, "Sama-sama! Kalau ada pertanyaan lain soal gula atau kebiasaan sehat, tanya saja ya."],
+  [/^(halo|hai|hi|hello|selamat (pagi|siang|sore|malam))\b/,
+    "Halo! Aku Sobat Gula. Aku bisa cek kandungan gula makanan, merangkum gulamu hari ini, dan menjawab pertanyaan edukasi diabetes. Coba salah satu pertanyaan di bawah."],
 ];
 
 const FALLBACK =
-  "Aku Sobat Gula, pendamping edukasi kesehatanmu. Kamu bisa menanyakan batas gula harian, takaran gula makanan/minuman (misal: donat, kopi susu, es teh), tips olahraga, atau pencegahan diabetes. Ada yang ingin kamu diskusikan?";
+  "Maaf, aku belum punya jawaban untuk itu. Aku bisa membantu soal: kandungan gula makanan (contoh: \"gula di bakso\"), batas gula harian, tips mengurangi gula, gejala dan pencegahan diabetes, serta ringkasan gulamu hari ini. Untuk kondisi pribadi, konsultasikan ke tenaga kesehatan.";
+
+async function todaySummary() {
+  const row = await get(
+    `SELECT COALESCE(SUM(sugar_g),0) AS total, COUNT(*) AS n FROM food_logs WHERE date(eaten_at)=${TODAY}`
+  );
+  const total = Math.round(row.total * 10) / 10;
+  if (row.n === 0)
+    return "Hari ini kamu belum mencatat makanan apa pun. Buka menu Cari Makanan untuk mulai mencatat, lalu aku bisa merangkumnya.";
+  const left = Math.round((DAILY_LIMIT_G - total) * 10) / 10;
+  const status = left >= 0 ? `Sisa jatahmu sekitar ${left} g.` : `Kamu sudah melewati acuan ${Math.abs(left)} g. Coba pilih minuman tanpa gula untuk sisa hari ini.`;
+  return `Hari ini kamu mencatat ${row.n} item dengan total sekitar ${total} g gula dari acuan ${DAILY_LIMIT_G} g. ${status}`;
+}
+
+const LIGHT = { hijau: "rendah", kuning: "sedang", merah: "tinggi" };
+
+async function foodAnswer(text) {
+  const hits = (await searchFoods(""))
+    .map((f) => {
+      const names = [f.name, ...String(f.aliases ?? "").split(",")].map((n) => n.trim().toLowerCase()).filter(Boolean);
+      const best = names.filter((n) => text.includes(n)).sort((a, b) => b.length - a.length)[0];
+      return best ? { f, len: best.length } : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.len - a.len);
+  if (hits.length === 0) return null;
+  const { f } = hits[0];
+  const spoons = Math.round((f.sugar_g / 12.5) * 10) / 10;
+  const pct = Math.round((f.sugar_g / DAILY_LIMIT_G) * 100);
+  if (f.sugar_g === 0)
+    return `${f.name} (${f.portion}) hampir tidak mengandung gula tambahan, jadi indikatornya hijau. Pilihan yang baik! Ingat, tetap perhatikan porsi dan campuran lainnya.`;
+  return `${f.name} (${f.portion}) kira-kira mengandung ${f.sugar_g} g gula, setara ${spoons} sendok makan atau ${pct}% dari batas harian. Kategori gula ${LIGHT[f.light]} (${f.light}). Ini estimasi; cek label atau tanyakan penjualnya untuk angka pasti.`;
+}
+
+export async function localReply(message) {
+  const text = String(message).toLowerCase().trim();
+  if (/(hari ini|sudah berapa|total gula|ringkasan|rekap|sisa).*(gula|jatah|catat)|(gula|jatah).*(hari ini|ringkasan|rekap|sisa)/.test(text))
+    return todaySummary();
+  const food = await foodAnswer(text);
+  const hit = KB.find(([re]) => re.test(text));
+  if (food && !(hit && /(batas|anjuran)/.test(text))) return food;
+  return hit ? hit[1] : FALLBACK;
+}
 
 export async function reply(message) {
   const safety = checkSafety(message);
-  if (safety === "emergency") return { reply: EMERGENCY_REPLY, mode: "safety" };
-  if (safety === "dosage") return { reply: DOSAGE_REPLY, mode: "safety" };
+  if (safety === "emergency") return { reply: EMERGENCY_REPLY, mode: "safety", suggestions: [] };
+  if (safety === "dosage") return { reply: DOSAGE_REPLY, mode: "safety", suggestions: SUGGESTIONS.slice(0, 3) };
   if (aiEnabled()) {
     try {
-      return { reply: await askAI(message), mode: "ai" };
-    } catch {
-      /* jatuh ke aturan lokal bila AI gagal */
-    }
+      return { reply: await askAI(message, await todaySummary()), mode: "ai", suggestions: SUGGESTIONS.slice(0, 3) };
+    } catch { /* jatuh ke aturan lokal */ }
   }
+  return { reply: await localReply(message), mode: "rules", suggestions: SUGGESTIONS.slice(0, 3) };
+}
 
-  const text = String(message).toLowerCase();
-
-  // 1. Cek aturan edukasi terstruktur
-  const hit = RULES.find(([re]) => re.test(text));
-  if (hit) return { reply: hit[1], mode: "rules" };
-
-  // 2. Cek apakah pengguna menanyakan makanan tertentu di basis data
-  const words = text
-    .replace(/[^a-zA-Z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter((w) => w.length > 2);
-  const stopWords = ["berapa", "kandungan", "makanan", "minuman", "apakah", "dalam", "untuk", "sehari", "adalah", "tentang", "makan"];
-  for (const w of words) {
-    if (stopWords.includes(w)) continue;
-    const found = searchFoods(w);
-    if (found.length > 0) {
-      const f = found[0];
-      const indicator = f.light === "hijau" ? "RENDAH (Aman)" : f.light === "kuning" ? "SEDANG (Batasi)" : "TINGGI (Hati-hati)";
-      return {
-        reply: `Berdasarkan basis data gizi GulaSadar: ${f.name} takaran ${f.portion} mengandung sekitar ${f.sugar_g} gram gula dan ${f.carbs_g} gram karbohidrat (Indikator: ${indicator}). Kamu bisa langsung mencatatnya di menu 'Pindai Makanan' untuk memantau sisa jatah gulamu hari ini.`,
-        mode: "rules",
-      };
-    }
-  }
-
-  return { reply: FALLBACK, mode: "rules" };
+export function chatStatus() {
+  const provider = aiProvider();
+  return { mode: provider ? "ai" : "rules", provider, suggestions: SUGGESTIONS };
 }

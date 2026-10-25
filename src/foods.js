@@ -1,4 +1,4 @@
-import db from "./db.js";
+import { all, get } from "./db.js";
 
 export const DAILY_LIMIT_G = 50; // anjuran maksimal gula per hari (Kemenkes)
 
@@ -6,7 +6,7 @@ export const DAILY_LIMIT_G = 50; // anjuran maksimal gula per hari (Kemenkes)
 const SEED = [
   ["es-teh-manis", "Es teh manis", "1 gelas (250 ml)", 20, 21, "minuman", "teh manis dingin,es teh"],
   ["teh-botol", "Teh kemasan botol", "1 botol (350 ml)", 24, 24, "minuman", "teh botol"],
-  ["kopi-susu-gula-aren", "Kopi Susu Gula Aren (Point Coffee / Kopi Kenangan)", "1 gelas (250 ml)", 18, 20, "minuman", "kopi susu,point coffee,kopi point,point,kopi,latte,aren,coffee"],
+  ["kopi-susu-gula-aren", "Kopi susu gula aren", "1 gelas (250 ml)", 18, 20, "minuman", "kopi susu"],
   ["soda", "Minuman soda", "1 kaleng (330 ml)", 35, 35, "minuman", "cola,minuman bersoda"],
   ["air-putih", "Air putih", "1 gelas (250 ml)", 0, 0, "minuman", "air mineral"],
   ["nasi-putih", "Nasi putih", "1 piring (150 g)", 0, 40, "makanan pokok", "nasi"],
@@ -19,24 +19,27 @@ const SEED = [
   ["es-krim", "Es krim", "1 cup (100 g)", 21, 24, "jajanan", "ice cream"],
   ["jus-jeruk-kemasan", "Jus jeruk kemasan", "1 kotak (250 ml)", 25, 26, "minuman", "jus jeruk"],
   ["apel", "Apel", "1 buah sedang", 14, 25, "buah", "buah apel"],
-  ["ciki-chitato", "Keripik Kentang Chitato", "1 bungkus (68 g)", 2, 38, "snack kemasan", "ciki,chitato,keripik kentang"],
-  ["ciki-taro", "Taro Net Seaweed", "1 bungkus (65 g)", 2, 42, "snack kemasan", "taro,ciki taro,snack"],
-  ["biskuit-oreo", "Biskuit Oreo Krim Vanila", "3 keping (28.5 g)", 12, 20, "snack kemasan", "oreo,biskuit"],
-  ["wafer-tango", "Wafer Tango Cokelat", "1 bungkus (47 g)", 14, 30, "snack kemasan", "wafer,tango,wafer coklat"],
-  ["cokelat-silverqueen", "Cokelat SilverQueen Cashew", "1 batang (58 g)", 28, 32, "snack kemasan", "silverqueen,cokelat"],
-  ["biskuit-roma", "Biskuit Roma Kelapa", "3 keping (27 g)", 6, 19, "snack kemasan", "roma,roma kelapa,biskuit"],
-  ["susu-uht-cokelat", "Susu UHT Cokelat", "1 kotak (200 ml)", 18, 24, "minuman", "susu ultra,susu coklat,uht"],
-  ["boba-milk-tea", "Boba Brown Sugar Milk Tea", "1 gelas (450 ml)", 42, 58, "minuman", "boba,bubble tea,brown sugar"],
-  ["donat", "Donat Gula / Cokelat", "1 buah (60 g)", 12, 28, "jajanan", "donat,doughnut,donut,donat cokelat,donat gula"],
-  ["permen-lolipop", "Permen Lolipop / Permen Manis", "1 buah (15 g)", 12, 14, "jajanan", "lolipop,lollipop,permen,candy,permen lolipop,permen gagang"],
+  ["teh-tawar", "Teh tawar", "1 gelas (250 ml)", 0, 0, "minuman", "teh pahit"],
+  ["kopi-hitam", "Kopi hitam tanpa gula", "1 cangkir (150 ml)", 0, 0, "minuman", "kopi pahit"],
+  ["boba-milk-tea", "Boba milk tea", "1 gelas (500 ml)", 38, 60, "minuman", "boba,bubble tea"],
+  ["susu-kental-manis", "Susu kental manis", "1 sachet (40 g)", 22, 23, "minuman", "skm"],
+  ["es-cendol", "Es cendol", "1 mangkuk", 28, 45, "jajanan", "cendol,dawet"],
+  ["donat-glaze", "Donat glaze", "1 buah", 14, 28, "jajanan", "donat,donut"],
+  ["coklat-batang", "Coklat batang", "1 batang (40 g)", 20, 24, "jajanan", "cokelat,chocolate"],
+  ["yogurt-manis", "Yogurt manis", "1 cup (150 g)", 17, 20, "minuman", "yoghurt"],
+  ["pisang", "Pisang", "1 buah sedang", 14, 27, "buah", "buah pisang"],
+  ["semangka", "Semangka", "1 potong (200 g)", 10, 15, "buah", "melon"],
+  ["bubur-ayam", "Bubur ayam", "1 mangkuk", 2, 40, "makanan berat", "bubur"],
+  ["soto-ayam", "Soto ayam", "1 mangkuk", 3, 30, "makanan berat", "soto"],
+  ["gado-gado", "Gado-gado", "1 piring", 8, 30, "makanan berat", "pecel,lotek"],
 ];
 
-export function seedFoods() {
-  const stmt = db.prepare(
-    "INSERT OR REPLACE INTO foods (id,name,portion,sugar_g,carbs_g,category,aliases) VALUES (?,?,?,?,?,?,?)"
-  );
-  db.transaction(() => SEED.forEach((row) => stmt.run(...row)))();
-}
+/** Perintah SQL untuk mengisi data makanan (INSERT OR IGNORE, aman dijalankan berulang). */
+export const seedStatements = () =>
+  SEED.map((args) => ({
+    sql: "INSERT OR IGNORE INTO foods (id,name,portion,sugar_g,carbs_g,category,aliases) VALUES (?,?,?,?,?,?,?)",
+    args,
+  }));
 
 // Indikator lampu lalu lintas (edukasi, bukan penilaian medis)
 export function trafficLight(sugarG) {
@@ -45,52 +48,24 @@ export function trafficLight(sugarG) {
   return "merah";
 }
 
-export function searchFoods(q = "") {
+export async function searchFoods(q = "") {
   const like = `%${q.trim().toLowerCase()}%`;
-  const rows = db
-    .query(
-      `SELECT * FROM foods
-       WHERE lower(name) LIKE ?1 OR lower(aliases) LIKE ?1
-       ORDER BY name LIMIT 50`
-    )
-    .all(like);
+  const rows = await all(
+    `SELECT * FROM foods
+     WHERE lower(name) LIKE ?1 OR lower(aliases) LIKE ?1
+     ORDER BY name LIMIT 50`,
+    [like]
+  );
   return rows.map((f) => ({ ...f, light: trafficLight(f.sugar_g) }));
 }
 
-export function getFood(id) {
-  const f = db.query("SELECT * FROM foods WHERE id = ?").get(id);
+export async function getFood(id) {
+  const f = await get("SELECT * FROM foods WHERE id = ?", [id]);
   return f ? { ...f, light: trafficLight(f.sugar_g) } : null;
 }
 
-export function allFoodIds() {
-  return db.query("SELECT id FROM foods ORDER BY id").all().map((r) => r.id);
-}
-
-export function slugify(name) {
-  return String(name)
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 50);
-}
-
-export const AI_LABEL_CATEGORY = "label kemasan (AI)";
-export const AI_ESTIMATE_CATEGORY = "estimasi AI";
-
-/** Simpan makanan hasil AI. Nilai dari label kemasan tidak ditimpa oleh estimasi kasar. */
-export function saveAiFood({ name, portion, sugarG, carbsG, labelRead }) {
-  const slug = slugify(name);
-  if (!slug) return null;
-  const id = `ai-${slug}`;
-  db.query(
-    `INSERT INTO foods (id,name,portion,sugar_g,carbs_g,category,aliases) VALUES (?1,?2,?3,?4,?5,?6,'')
-     ON CONFLICT(id) DO UPDATE SET portion=excluded.portion, sugar_g=excluded.sugar_g,
-       carbs_g=excluded.carbs_g, category=excluded.category
-     WHERE excluded.category = ?7 OR foods.category <> ?7`
-  ).run(id, name, portion, sugarG, carbsG, labelRead ? AI_LABEL_CATEGORY : AI_ESTIMATE_CATEGORY, AI_LABEL_CATEGORY);
-  return getFood(id);
+export async function allFoodIds() {
+  return (await all("SELECT id FROM foods ORDER BY id")).map((r) => r.id);
 }
 
 /** Hitung gula dari label kemasan. */

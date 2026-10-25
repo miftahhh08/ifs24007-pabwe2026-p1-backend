@@ -2,7 +2,8 @@ import { test, expect, describe, beforeAll, afterAll } from "bun:test";
 
 process.env.DB_PATH = ":memory:";
 const { default: app } = await import("../src/app.js");
-const { trafficLight, searchFoods, getFood, DAILY_LIMIT_G } = await import("../src/foods.js");
+const { trafficLight, searchFoods, getFood, seedStatements, DAILY_LIMIT_G } = await import("../src/foods.js");
+const { initDb } = await import("../src/db.js");
 
 let server, base;
 beforeAll(() => {
@@ -27,14 +28,15 @@ describe("logika makanan", () => {
     expect(trafficLight(15.1)).toBe("merah");
   });
 
-  test("searchFoods tanpa kata kunci mengembalikan semua makanan", () => {
-    expect(searchFoods().length).toBeGreaterThanOrEqual(10);
-    expect(searchFoods("tidak-ada-makanan-ini")).toEqual([]);
+  test("searchFoods tanpa kata kunci mengembalikan semua makanan", async () => {
+    expect((await searchFoods()).length).toBeGreaterThanOrEqual(10);
+    expect(await searchFoods("tidak-ada-makanan-ini")).toEqual([]);
   });
 
-  test("getFood", () => {
-    expect(getFood("bakso").name).toBe("Bakso");
-    expect(getFood("xxx")).toBeNull();
+  test("getFood", async () => {
+    await initDb(seedStatements());
+    expect((await getFood("bakso")).name).toBe("Bakso");
+    expect(await getFood("xxx")).toBeNull();
     expect(DAILY_LIMIT_G).toBe(50);
   });
 });
