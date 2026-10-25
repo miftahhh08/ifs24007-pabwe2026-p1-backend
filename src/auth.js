@@ -1,7 +1,32 @@
 import crypto from "crypto";
-import db from "./db.js";
+import db, { TZ } from "./db.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+async function hashPassword(password) {
+  if (typeof Bun !== "undefined" && Bun?.password?.hash) {
+    return await Bun.password.hash(password);
+  }
+  const salt = crypto.randomBytes(16).toString("hex");
+  const derivedKey = crypto.scryptSync(password, salt, 64);
+  return `scrypt:${salt}:${derivedKey.toString("hex")}`;
+}
+
+async function verifyPassword(password, hash) {
+  if (typeof hash === "string" && hash.startsWith("scrypt:")) {
+    const [, salt, key] = hash.split(":");
+    const derivedKey = crypto.scryptSync(password, salt, 64);
+    return crypto.timingSafeEqual(Buffer.from(key, "hex"), derivedKey);
+  }
+  if (typeof Bun !== "undefined" && Bun?.password?.verify) {
+    try {
+      return await Bun.password.verify(password, hash);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
 
 export function validateRegister(body = {}) {
   const { name, email, password } = body;
@@ -32,22 +57,23 @@ export async function registerUser({ name, email, password }) {
   const cleanName = name.trim();
   const cleanEmail = email.trim().toLowerCase();
 
-  const existing = db.query("SELECT id FROM users WHERE LOWER(email) = LOWER(?)").get(cleanEmail);
+  const existing = await db.get("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", [cleanEmail]);
   if (existing) {
     return { error: "Email sudah terdaftar. Silakan gunakan email lain atau masuk.", status: 409 };
   }
 
-  const passwordHash = await Bun.password.hash(password);
-  const info = db
-    .query("INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)")
-    .run(cleanName, cleanEmail, passwordHash);
+  const passwordHash = await hashPassword(password);
+  const info = await db.run(
+    "INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)",
+    [cleanName, cleanEmail, passwordHash]
+  );
 
   const userId = Number(info.lastInsertRowid);
   const token = crypto.randomUUID();
 
-  db.query("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))").run(
-    token,
-    userId
+  await db.run(
+    `INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '${TZ}', '+30 days'))`,
+    [token, userId]
   );
 
   return {
@@ -60,21 +86,21 @@ export async function registerUser({ name, email, password }) {
 
 export async function loginUser({ email, password }) {
   const cleanEmail = email.trim().toLowerCase();
-  const user = db.query("SELECT * FROM users WHERE LOWER(email) = LOWER(?)").get(cleanEmail);
+  const user = await db.get("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [cleanEmail]);
 
   if (!user) {
     return { error: "Email atau kata sandi tidak cocok", status: 401 };
   }
 
-  const match = await Bun.password.verify(password, user.password_hash);
+  const match = await verifyPassword(password, user.password_hash);
   if (!match) {
     return { error: "Email atau kata sandi tidak cocok", status: 401 };
   }
 
   const token = crypto.randomUUID();
-  db.query("INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '+30 days'))").run(
-    token,
-    user.id
+  await db.run(
+    `INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, datetime('now', '${TZ}', '+30 days'))`,
+    [token, user.id]
   );
 
   return {
@@ -85,29 +111,28 @@ export async function loginUser({ email, password }) {
   };
 }
 
-export function getUserByToken(token) {
+export async function getUserByToken(token) {
   if (!token || typeof token !== "string") return null;
-  const row = db
-    .query(
-      `SELECT u.id, u.name, u.email
-       FROM sessions s
-       JOIN users u ON u.id = s.user_id
-       WHERE s.token = ? AND datetime(s.expires_at) > datetime('now', 'localtime')`
-    )
-    .get(token);
+  const row = await db.get(
+    `SELECT u.id, u.name, u.email
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.token = ? AND datetime(s.expires_at) > datetime('now', '${TZ}')`,
+    [token]
+  );
   return row ?? null;
 }
 
-export function logoutToken(token) {
+export async function logoutToken(token) {
   if (!token || typeof token !== "string") return;
-  db.query("DELETE FROM sessions WHERE token = ?").run(token);
+  await db.run("DELETE FROM sessions WHERE token = ?", [token]);
 }
 
-export function authMiddleware(req, _res, next) {
+export async function authMiddleware(req, _res, next) {
   const authHeader = req.headers.authorization;
   if (authHeader && typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
     const token = authHeader.slice(7).trim();
-    const user = getUserByToken(token);
+    const user = await getUserByToken(token);
     if (user) {
       req.user = user;
       req.token = token;

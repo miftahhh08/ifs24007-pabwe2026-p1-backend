@@ -2,6 +2,7 @@ import { test, expect, describe, beforeAll, afterAll, afterEach } from "bun:test
 
 process.env.DB_PATH = ":memory:";
 delete process.env.ANTHROPIC_API_KEY;
+delete process.env.GEMINI_API_KEY;
 const { default: app } = await import("../src/app.js");
 const { calcLabel, allFoodIds } = await import("../src/foods.js");
 const { checkSafety } = await import("../src/safety.js");
@@ -13,7 +14,7 @@ let server, base;
 beforeAll(() => { server = app.listen(0); base = `http://127.0.0.1:${server.address().port}`; });
 afterAll(() => server.close());
 const realFetch = globalThis.fetch;
-afterEach(() => { globalThis.fetch = realFetch; delete process.env.ANTHROPIC_API_KEY; });
+afterEach(() => { globalThis.fetch = realFetch; delete process.env.ANTHROPIC_API_KEY; delete process.env.GEMINI_API_KEY; });
 const send = (path, body, method = "POST") =>
   realFetch(base + path, { method, headers: { "Content-Type": "application/json" }, body: body && JSON.stringify(body) });
 

@@ -1,4 +1,4 @@
-import { all, get } from "./db.js";
+import { all, get, initDb } from "./db.js";
 
 export const DAILY_LIMIT_G = 50; // anjuran maksimal gula per hari (Kemenkes)
 
@@ -49,6 +49,7 @@ export function trafficLight(sugarG) {
 }
 
 export async function searchFoods(q = "") {
+  await initDb(seedStatements());
   const like = `%${q.trim().toLowerCase()}%`;
   const rows = await all(
     `SELECT * FROM foods
@@ -60,11 +61,13 @@ export async function searchFoods(q = "") {
 }
 
 export async function getFood(id) {
+  await initDb(seedStatements());
   const f = await get("SELECT * FROM foods WHERE id = ?", [id]);
   return f ? { ...f, light: trafficLight(f.sugar_g) } : null;
 }
 
 export async function allFoodIds() {
+  await initDb(seedStatements());
   return (await all("SELECT id FROM foods ORDER BY id")).map((r) => r.id);
 }
 
